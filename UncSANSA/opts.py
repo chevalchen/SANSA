@@ -49,5 +49,8 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uq_head_path", type=str, default=None,
                         help="Path to a trained UQ head (.pth). When provided, inference_fss.py "
                              "reports per-episode confidence scores alongside mIoU.")
+    parser.add_argument("--save_uq_log", type=str, default=None,
+                        help="Path to save per-episode (uq_score, actual_iou, class_id) log (.pt). "
+                             "Requires --uq_head_path. Used by tools/eval_uq_quality.py.")
 
     return parser

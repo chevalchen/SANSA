@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from os.path import join
 import torch
@@ -51,7 +52,9 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
     model.eval()
     average_meter = AverageMeter(args.dataset_file, ds.class_ids, ds.nclass)
 
-    uq_scores_all = []   # collect per-episode UQ scores when head is loaded
+    uq_scores_all = []   # per-episode UQ confidence scores
+    iou_log       = []   # per-episode actual foreground IoU (for UQ quality eval)
+    class_id_log  = []   # per-episode class id
 
     pbar = tqdm(dataloader, ncols=80, desc='runn avg.', disable=(utils.get_rank() != 0), file=sys.stderr, dynamic_ncols=True)
     for idx, batch in enumerate(pbar):
@@ -73,6 +76,13 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
 
         area_inter, area_union = Evaluator.classify_prediction(pred_masks[-1:].float(), batch, device=imgs.device)
         average_meter.update(area_inter, area_union, batch['class_id'].cuda())
+
+        # Per-episode actual foreground IoU (fg channel = index 1)
+        fg_inter = area_inter[1].sum().item()
+        fg_union = area_union[1].sum().item()
+        ep_iou   = fg_inter / max(fg_union, 1e-6)
+        iou_log.append(ep_iou)
+        class_id_log.append(batch['class_id'].item())
 
         # Accumulate UQ scores if head is active
         if "uq_scores" in outputs:
@@ -110,6 +120,22 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
         avg_conf = sum(uq_scores_all) / len(uq_scores_all)
         print(f'UQ head  avg confidence: {avg_conf:.4f}  '
               f'(1=certain, 0=uncertain)  over {len(uq_scores_all)} episodes')
+
+    # --save_uq_log: write per-episode (uq_score, actual_iou, class_id) for offline analysis
+    save_log = getattr(args, 'save_uq_log', None)
+    if save_log and uq_scores_all:
+        os.makedirs(os.path.dirname(os.path.abspath(save_log)), exist_ok=True)
+        torch.save({
+            'uq_scores': torch.tensor(uq_scores_all, dtype=torch.float32),  # [N]
+            'iou':       torch.tensor(iou_log,        dtype=torch.float32),  # [N]
+            'class_ids': torch.tensor(class_id_log,   dtype=torch.long),     # [N]
+            'dataset':   args.dataset_file,
+            'fold':      args.fold,
+            'shot':      args.shots,
+        }, save_log)
+        print(f'UQ log saved → {save_log}')
+        print(f'  Run:  python tools/eval_uq_quality.py --log {save_log}')
+
     print('==================== Finished Testing ====================')
 
     return miou
