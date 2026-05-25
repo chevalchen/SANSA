@@ -46,5 +46,8 @@ def get_args_parser() -> argparse.ArgumentParser:
     # Inference
     parser.add_argument("--threshold", type=float, default=0.5, help="Sigmoid threshold to binarize masks at eval.")
     parser.add_argument("--visualize", action="store_true", default=False, help="Save qualitative results.")
+    parser.add_argument("--uq_head_path", type=str, default=None,
+                        help="Path to a trained UQ head (.pth). When provided, inference_fss.py "
+                             "reports per-episode confidence scores alongside mIoU.")
 
     return parser

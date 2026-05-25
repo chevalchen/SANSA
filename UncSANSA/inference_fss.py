@@ -20,7 +20,8 @@ def main(args: argparse.Namespace) -> float:
     make_deterministic(args.seed)
     print(args)
 
-    model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device)
+    model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device,
+                        uq_head_path=getattr(args, 'uq_head_path', None))
     device = torch.device(args.device)
     model.to(device)
 
@@ -50,6 +51,8 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
     model.eval()
     average_meter = AverageMeter(args.dataset_file, ds.class_ids, ds.nclass)
 
+    uq_scores_all = []   # collect per-episode UQ scores when head is loaded
+
     pbar = tqdm(dataloader, ncols=80, desc='runn avg.', disable=(utils.get_rank() != 0), file=sys.stderr, dynamic_ncols=True)
     for idx, batch in enumerate(pbar):
         query_img, query_mask = batch['query_img'], batch['query_mask']
@@ -65,15 +68,23 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
             outputs = model(imgs, prompt_dict)
 
         pred_masks = outputs["pred_masks"].unsqueeze(0)  # [1, T, h, w]
-        pred_masks = F.interpolate(pred_masks, size=(img_h, img_w), mode='bilinear', align_corners=False) 
+        pred_masks = F.interpolate(pred_masks, size=(img_h, img_w), mode='bilinear', align_corners=False)
         pred_masks = (pred_masks.sigmoid() > args.threshold)[0].cpu()
 
         area_inter, area_union = Evaluator.classify_prediction(pred_masks[-1:].float(), batch, device=imgs.device)
         average_meter.update(area_inter, area_union, batch['class_id'].cuda())
 
+        # Accumulate UQ scores if head is active
+        if "uq_scores" in outputs:
+            uq_scores_all.append(outputs["uq_scores"].mean().item())
+
         if (idx + 1) % 50 == 0:
             miou, _, _ = average_meter.compute_iou()
-            pbar.set_description(f"Runn. Avg mIoU = {miou:.1f}")
+            desc = f"Runn. Avg mIoU = {miou:.1f}"
+            if uq_scores_all:
+                avg_conf = sum(uq_scores_all) / len(uq_scores_all)
+                desc += f"  UQ conf = {avg_conf:.3f}"
+            pbar.set_description(desc)
 
         if args.visualize:
             from util.visualization import visualize_episode
@@ -95,6 +106,10 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
     average_meter.write_result(args.dataset_file)
     miou, fb_iou, _ = average_meter.compute_iou()
     print('Fold %d mIoU: %5.2f \t FB-IoU: %5.2f' % (args.fold, miou, fb_iou.item()))
+    if uq_scores_all:
+        avg_conf = sum(uq_scores_all) / len(uq_scores_all)
+        print(f'UQ head  avg confidence: {avg_conf:.4f}  '
+              f'(1=certain, 0=uncertain)  over {len(uq_scores_all)} episodes')
     print('==================== Finished Testing ====================')
 
     return miou
