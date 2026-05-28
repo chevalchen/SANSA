@@ -36,3 +36,20 @@ class UQHead(nn.Module):
         """
         x = torch.cat([iou_token, mask_token], dim=-1)  # [B, 512]
         return self.layers(x)
+
+    def score_candidates(
+        self, iou_token: torch.Tensor, mask_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Score M mask candidates in one pass (used for UQ-guided multi-mask selection).
+
+        Args:
+            iou_token:   [B, 256]    — shared iou_token_out (same for all candidates)
+            mask_tokens: [B, M, 256] — mask_tokens_out[:, 1:4, :] (multi-mask tokens)
+        Returns:
+            scores: [B, M]  confidence for each candidate; argmax selects best mask
+        """
+        B, M, C = mask_tokens.shape
+        iou_exp = iou_token.unsqueeze(1).expand(B, M, C)       # [B, M, 256]
+        x = torch.cat([iou_exp, mask_tokens], dim=-1)           # [B, M, 512]
+        return self.layers(x.reshape(B * M, 512)).reshape(B, M) # [B, M]

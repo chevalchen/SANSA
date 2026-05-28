@@ -22,7 +22,10 @@ def main(args: argparse.Namespace) -> float:
     print(args)
 
     model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device,
-                        uq_head_path=getattr(args, 'uq_head_path', None))
+                        uq_head_path=getattr(args, 'uq_head_path', None),
+                        uq_mode=getattr(args, 'uq_mode', 'observe'),
+                        uq_refine_threshold=getattr(args, 'uq_refine_threshold', 0.5),
+                        uq_accept_margin=getattr(args, 'uq_accept_margin', 0.0))
     device = torch.device(args.device)
     model.to(device)
 
@@ -56,10 +59,25 @@ def eval_fss(model: torch.nn.Module, args: argparse.Namespace) -> float:
     iou_log       = []   # per-episode actual foreground IoU (for UQ quality eval)
     class_id_log  = []   # per-episode class id
 
+    # Independent RNG for support-order shuffling — keeps dataset/model determinism intact.
+    _shuffle_rng = torch.Generator().manual_seed(getattr(args, 'shuffle_seed', 0))
+
     pbar = tqdm(dataloader, ncols=80, desc='runn avg.', disable=(utils.get_rank() != 0), file=sys.stderr, dynamic_ncols=True)
     for idx, batch in enumerate(pbar):
         query_img, query_mask = batch['query_img'], batch['query_mask']
         support_imgs, support_masks = batch['support_imgs'], batch['support_masks']
+
+        # Diagnostic: permute support frames per episode to probe temporal-position-encoding bias.
+        # support_imgs/masks have shape [1, K, ...]; we permute along dim=1.
+        order = getattr(args, 'support_order', 'none')
+        if order != 'none' and args.shots > 1:
+            K = support_imgs.shape[1]
+            if order == 'reverse':
+                perm = torch.arange(K - 1, -1, -1)
+            else:  # 'shuffle' — per-episode random, uses local RNG seeded by --shuffle_seed
+                perm = torch.randperm(K, generator=_shuffle_rng)
+            support_imgs  = support_imgs[:, perm]
+            support_masks = support_masks[:, perm]
 
         imgs = torch.cat([support_imgs[0], query_img]).unsqueeze(0) # b t c h w
         img_h, img_w = imgs.shape[-2:]

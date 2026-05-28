@@ -374,6 +374,15 @@ class SAM2Base(torch.nn.Module):
             align_corners=False,
         )
 
+        # UQ side-channel: expose all candidates before SAM's IoU-head selection so that
+        # sansa.py can override the selection using UQHead scores.
+        if multimask_output:
+            self.sam_mask_decoder._uq_all_low_res_masks  = low_res_multimasks.detach()   # [B, 3, H*4, W*4]
+            self.sam_mask_decoder._uq_all_high_res_masks = high_res_multimasks.detach()  # [B, 3, H*16, W*16]
+        else:
+            self.sam_mask_decoder._uq_all_low_res_masks  = None
+            self.sam_mask_decoder._uq_all_high_res_masks = None
+
         sam_output_token = sam_output_tokens[:, 0]
         if multimask_output:
             # take the best mask prediction (with the highest IoU estimation)

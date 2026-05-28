@@ -52,5 +52,29 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_uq_log", type=str, default=None,
                         help="Path to save per-episode (uq_score, actual_iou, class_id) log (.pt). "
                              "Requires --uq_head_path. Used by tools/eval_uq_quality.py.")
+    parser.add_argument("--uq_mode", type=str, default="observe",
+                        choices=["observe", "select", "refine"],
+                        help="How UQ head is used at inference. "
+                             "'observe': record UQ scores only, no change to decoder output (baseline). "
+                             "'select': UQ-guided multi-mask selection (Route 1; known to hurt mIoU). "
+                             "'refine': iterative re-prompting on low-UQ episodes (Route 3).")
+    parser.add_argument("--uq_refine_threshold", type=float, default=0.5,
+                        help="In --uq_mode=refine, episodes with UQ score below this threshold "
+                             "trigger a second mask-prompted decoder pass. Default 0.5.")
+    parser.add_argument("--uq_accept_margin", type=float, default=0.0,
+                        help="In --uq_mode=refine, the refined prediction is accepted only if "
+                             "its UQ score exceeds the original by at least this margin. "
+                             "Default 0.0 (any improvement accepted). Try 0.05-0.10 to filter "
+                             "out spurious UQ-only gains (token-distribution artifacts).")
+    parser.add_argument("--support_order", type=str, default="none",
+                        choices=["none", "shuffle", "reverse"],
+                        help="Diagnostic: permute support frames per episode to test temporal "
+                             "position-encoding bias. 'shuffle' = random per-episode "
+                             "(controlled by --shuffle_seed, NOT --seed); "
+                             "'reverse' = deterministic reverse. Compare mIoU vs 'none' baseline.")
+    parser.add_argument("--shuffle_seed", type=int, default=0,
+                        help="Independent seed for --support_order=shuffle. Uses a local RNG so "
+                             "it does not perturb dataset/model determinism. Vary across runs "
+                             "(0, 1, 2, ...) to probe support-order sensitivity.")
 
     return parser

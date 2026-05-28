@@ -17,11 +17,16 @@ from util.promptable_utils import rescale_prompt
 
 
 class SANSA(nn.Module):
-    def __init__(self, sam: SAM2Base, device: torch.device, uq_head=None):
+    def __init__(self, sam: SAM2Base, device: torch.device, uq_head=None,
+                 uq_mode: str = "observe", uq_refine_threshold: float = 0.5,
+                 uq_accept_margin: float = 0.0):
         super().__init__()
         self.sam = sam
         self.device = device
         self.uq_head = uq_head  # UQHead instance or None; None = no UQ scoring
+        self.uq_mode = uq_mode  # 'observe' | 'select' | 'refine'
+        self.uq_refine_threshold = uq_refine_threshold
+        self.uq_accept_margin = uq_accept_margin
 
     def forward(self, samples: torch.Tensor, prompt_dict: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -57,15 +62,52 @@ class SANSA(nn.Module):
                         
                 else:
                     decoder_out: DecoderOutput = self._compute_decoder_out_w_mem(backbone_output, absolute_idx, idx, self.memory_bank)
-                    # UQ scoring — only on query frames where memory is available
+                    # UQ branch (query frames only). Behavior depends on self.uq_mode.
                     if self.uq_head is not None:
                         dec = self.sam.sam_mask_decoder
                         if dec._uq_iou_token is not None:
-                            score = self.uq_head(
-                                dec._uq_iou_token.to(self.device),
-                                dec._uq_mask_token.to(self.device),
-                            )  # [1, 1]
-                            outputs.setdefault("uq_scores", []).append(score)
+                            iou_tok = dec._uq_iou_token.to(self.device)
+
+                            if self.uq_mode == "select" and dec._uq_all_low_res_masks is not None:
+                                # Route 1: UQ-guided multi-mask selection (known to hurt mIoU on FSS/PACO)
+                                multi_toks  = dec._uq_mask_tokens[:, 1:, :].to(self.device)  # [B, 3, 256]
+                                cand_scores = self.uq_head.score_candidates(iou_tok, multi_toks)  # [B, 3]
+                                best_idx    = cand_scores.argmax(dim=-1)                          # [B]
+                                b_inds      = torch.arange(best_idx.size(0), device=self.device)
+                                decoder_out.low_res_masks  = dec._uq_all_low_res_masks[b_inds, best_idx].unsqueeze(1).to(self.device)
+                                decoder_out.high_res_masks = dec._uq_all_high_res_masks[b_inds, best_idx].unsqueeze(1).to(self.device)
+                                decoder_out.masks          = decoder_out.low_res_masks
+                                ep_score = cand_scores[b_inds, best_idx].unsqueeze(-1)  # [B, 1]
+
+                            else:
+                                # Observe (default) or refine: keep SAM IoU-head selection, compute episode UQ
+                                ep_score = self.uq_head(iou_tok, dec._uq_mask_token.to(self.device))  # [B, 1]
+
+                                # Route 3: iterative re-prompting on low-UQ episodes
+                                if (self.uq_mode == "refine"
+                                        and ep_score.mean().item() < self.uq_refine_threshold
+                                        and decoder_out.pix_feat_with_mem is not None):
+                                    current_vision_feats = backbone_output.get_current_feats(absolute_idx)
+                                    high_res_features    = backbone_output.get_high_res_features(current_vision_feats)
+                                    refined_out: DecoderOutput = self.sam._forward_sam_heads(
+                                        backbone_features=decoder_out.pix_feat_with_mem,
+                                        mask_inputs=decoder_out.high_res_masks.to(self.device),
+                                        high_res_features=high_res_features,
+                                        multimask_output=False,   # single mask in refinement
+                                    )
+                                    # Re-read tokens after second decoder pass
+                                    score2 = self.uq_head(
+                                        dec._uq_iou_token.to(self.device),
+                                        dec._uq_mask_token.to(self.device),
+                                    )  # [B, 1]
+                                    # Accept refinement only if UQ score improves by at least the margin.
+                                    # margin > 0 filters out spurious gains from token-distribution shift
+                                    # (refined output uses single-mask token = UQHead's in-distribution input).
+                                    if score2.mean().item() > ep_score.mean().item() + self.uq_accept_margin:
+                                        decoder_out = refined_out
+                                        ep_score    = score2
+
+                            outputs.setdefault("uq_scores", []).append(ep_score)
 
                 # update memory bank
                 mem_entry = self._compute_memory_bank_dict(decoder_out, backbone_output, absolute_idx)
@@ -232,7 +274,7 @@ class SANSA(nn.Module):
         return BackboneOutput(orig_size, vision_feats, vision_pos, sizes)
 
 
-def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None) -> SANSA:
+def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None, uq_mode: str = 'observe', uq_refine_threshold: float = 0.5, uq_accept_margin: float = 0.0) -> SANSA:
     assert sam2_version in SAM2_PATHS_CONFIG.keys(), f'wrong argument sam2_version: {sam2_version}'
     
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[sam2_version]
@@ -254,7 +296,9 @@ def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2,
 
     state_dict = torch.load(sam2_weights, map_location="cpu", weights_only=False)["model"]
     sam.load_state_dict(state_dict, strict=False)
-    model = SANSA(sam=sam, device=torch.device(device))
+    model = SANSA(sam=sam, device=torch.device(device),
+                  uq_mode=uq_mode, uq_refine_threshold=uq_refine_threshold,
+                  uq_accept_margin=uq_accept_margin)
 
     # freeze everything except adapters
     for name, p in model.named_parameters():

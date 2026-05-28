@@ -73,9 +73,9 @@ def compute_relative_auc(uq_scores: np.ndarray, iou: np.ndarray,
     curve_oracle = correction_curve(uq_scores, iou, oracle_order, r_max, n_steps)
     curve_random = correction_curve(uq_scores, iou, random_order, r_max, n_steps)
 
-    auc_uq     = np.trapz(curve_uq,     dx=r_max / n_steps)
-    auc_oracle = np.trapz(curve_oracle, dx=r_max / n_steps)
-    auc_random = np.trapz(curve_random, dx=r_max / n_steps)
+    auc_uq     = np.trapezoid(curve_uq,     dx=r_max / n_steps)
+    auc_oracle = np.trapezoid(curve_oracle, dx=r_max / n_steps)
+    auc_random = np.trapezoid(curve_random, dx=r_max / n_steps)
 
     rel_auc = (auc_uq - auc_random) / max(auc_oracle - auc_random, 1e-8) * 100
 
