@@ -108,9 +108,8 @@ class MaskDecoder(nn.Module):
         self.dynamic_multimask_stability_thresh = dynamic_multimask_stability_thresh
 
         # UQ side-channel: populated by predict_masks() on every forward call
-        self._uq_iou_token = None    # [B, 256]
-        self._uq_mask_token = None   # [B, 256]  single-mask token (index 0), kept for compat
-        self._uq_mask_tokens = None  # [B, 4, 256]  all tokens: [0]=single, [1-3]=multi-mask
+        self._uq_iou_token  = None   # [B, 256]  iou token output from transformer
+        self._uq_mask_token = None   # [B, 256]  single-mask token (index 0)
 
     def forward(
         self,
@@ -220,9 +219,8 @@ class MaskDecoder(nn.Module):
         mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :]
 
         # UQ side-channel — overwritten on every call; read by sansa.py after decode
-        self._uq_iou_token   = iou_token_out.detach()             # [B, 256]
-        self._uq_mask_token  = mask_tokens_out[:, 0, :].detach()  # [B, 256] single-mask token (compat)
-        self._uq_mask_tokens = mask_tokens_out.detach()           # [B, 4, 256] all tokens
+        self._uq_iou_token  = iou_token_out.detach()              # [B, 256]
+        self._uq_mask_token = mask_tokens_out[:, 0, :].detach()   # [B, 256] single-mask token
 
         # Upscale mask embeddings and predict masks using the mask tokens
         src = src.transpose(1, 2).view(b, c, h, w)
