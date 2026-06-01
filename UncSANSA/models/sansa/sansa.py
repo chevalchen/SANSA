@@ -18,12 +18,13 @@ from util.promptable_utils import rescale_prompt
 
 class SANSA(nn.Module):
     def __init__(self, sam: SAM2Base, device: torch.device, uq_head=None,
-                 hflip_tta: bool = False):
+                 hflip_tta: bool = False, mem_feedback: bool = False):
         super().__init__()
         self.sam = sam
         self.device = device
-        self.uq_head = uq_head        # UQHead instance or None; None = UQ scoring disabled
-        self.hflip_tta = hflip_tta    # If True, ensemble query frame with its horizontal flip
+        self.uq_head = uq_head
+        self.hflip_tta = hflip_tta
+        self.mem_feedback = mem_feedback
 
     def forward(self, samples: torch.Tensor, prompt_dict: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -58,7 +59,7 @@ class SANSA(nn.Module):
                         decoder_out: DecoderOutput = self._compute_decoder_out_no_mem(backbone_output, absolute_idx, prompt_input=frame_prompt)
                         
                 else:
-                    decoder_out: DecoderOutput = self._compute_decoder_out_w_mem(backbone_output, absolute_idx, idx, self.memory_bank)
+                    decoder_out, pix_feat_with_mem, high_res_features = self._compute_decoder_out_w_mem(backbone_output, absolute_idx, idx, self.memory_bank)
 
                     # Horizontal-flip TTA: re-encode the flipped query and ensemble masks in
                     # logit space.  Reduces prediction variance at the cost of one extra
@@ -66,9 +67,23 @@ class SANSA(nn.Module):
                     if self.hflip_tta:
                         flipped_img = torch.flip(samples[absolute_idx:absolute_idx + 1], dims=[-1])
                         flipped_bb  = self._forward_backbone(flipped_img, [orig_size[absolute_idx]])
-                        flipped_out = self._compute_decoder_out_w_mem(flipped_bb, 0, idx, self.memory_bank)
+                        flipped_out, _, _ = self._compute_decoder_out_w_mem(flipped_bb, 0, idx, self.memory_bank)
                         decoder_out.low_res_masks  = 0.5 * (decoder_out.low_res_masks  + torch.flip(flipped_out.low_res_masks,  dims=[-1]))
                         decoder_out.high_res_masks = 0.5 * (decoder_out.high_res_masks + torch.flip(flipped_out.high_res_masks, dims=[-1]))
+                        decoder_out.masks          = decoder_out.low_res_masks
+
+                    # Memory closed-loop: second decode with first prediction as soft
+                    # mask_inputs prompt; fuse logits equally. Reuses memory-conditioned
+                    # features from the first pass — no extra backbone cost.
+                    if self.mem_feedback:
+                        decoder_out_2 = self.sam._forward_sam_heads(
+                            backbone_features=pix_feat_with_mem,
+                            mask_inputs=decoder_out.low_res_masks,
+                            high_res_features=high_res_features,
+                            multimask_output=True if idx > 0 else False,
+                        )
+                        decoder_out.low_res_masks  = 0.5 * (decoder_out.low_res_masks  + decoder_out_2.low_res_masks)
+                        decoder_out.high_res_masks = 0.5 * (decoder_out.high_res_masks + decoder_out_2.high_res_masks)
                         decoder_out.masks          = decoder_out.low_res_masks
 
                     # UQ: observe-only — record confidence for quality evaluation; no decoder changes.
@@ -150,7 +165,7 @@ class SANSA(nn.Module):
         idx: int,
         memory_idx: int,
         memory_bank: Dict[int, Dict[str, torch.Tensor]],
-    ) -> DecoderOutput:
+    ) -> Tuple[DecoderOutput, torch.Tensor, List[torch.Tensor]]:
         """
         Decode a frame with memory: used for target frames;
 
@@ -183,7 +198,7 @@ class SANSA(nn.Module):
             high_res_features=high_res_features,
             multimask_output=True if memory_idx > 0 else False
         )
-        return decoder_out
+        return decoder_out, pix_feat_with_mem, high_res_features
 
     def _compute_memory_bank_dict(
         self, decoder_out: DecoderOutput, backbone_out: BackboneOutput, idx: int
@@ -246,7 +261,7 @@ class SANSA(nn.Module):
         return BackboneOutput(orig_size, vision_feats, vision_pos, sizes)
 
 
-def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None, hflip_tta: bool = False) -> SANSA:
+def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None, hflip_tta: bool = False, mem_feedback: bool = False) -> SANSA:
     assert sam2_version in SAM2_PATHS_CONFIG.keys(), f'wrong argument sam2_version: {sam2_version}'
     
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[sam2_version]
@@ -268,7 +283,7 @@ def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2,
 
     state_dict = torch.load(sam2_weights, map_location="cpu", weights_only=False)["model"]
     sam.load_state_dict(state_dict, strict=False)
-    model = SANSA(sam=sam, device=torch.device(device), hflip_tta=hflip_tta)
+    model = SANSA(sam=sam, device=torch.device(device), hflip_tta=hflip_tta, mem_feedback=mem_feedback)
 
     # freeze everything except adapters
     for name, p in model.named_parameters():

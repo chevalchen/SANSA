@@ -50,6 +50,10 @@ def get_args_parser() -> argparse.ArgumentParser:
                         help="Enable horizontal-flip test-time augmentation for query frames: "
                              "re-encode the flipped image and ensemble masks in logit space. "
                              "Adds one backbone forward per query frame. (+0.43 mIoU on PACO-Part.)")
+    parser.add_argument("--mem_feedback", action="store_true", default=False,
+                        help="Memory closed-loop feedback: second decode using first prediction "
+                             "as soft mask_inputs prompt; fuse two logits with equal weight. "
+                             "No extra backbone cost (reuses memory-conditioned features).")
     parser.add_argument("--uq_head_path", type=str, default=None,
                         help="Path to a trained UQ head (.pth). When provided, inference_fss.py "
                              "records per-episode confidence scores (observe-only; no decoder changes).")
