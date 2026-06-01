@@ -17,11 +17,13 @@ from util.promptable_utils import rescale_prompt
 
 
 class SANSA(nn.Module):
-    def __init__(self, sam: SAM2Base, device: torch.device, uq_head=None):
+    def __init__(self, sam: SAM2Base, device: torch.device, uq_head=None,
+                 hflip_tta: bool = False):
         super().__init__()
         self.sam = sam
         self.device = device
-        self.uq_head = uq_head  # UQHead instance or None; None = UQ scoring disabled
+        self.uq_head = uq_head        # UQHead instance or None; None = UQ scoring disabled
+        self.hflip_tta = hflip_tta    # If True, ensemble query frame with its horizontal flip
 
     def forward(self, samples: torch.Tensor, prompt_dict: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -57,6 +59,18 @@ class SANSA(nn.Module):
                         
                 else:
                     decoder_out: DecoderOutput = self._compute_decoder_out_w_mem(backbone_output, absolute_idx, idx, self.memory_bank)
+
+                    # Horizontal-flip TTA: re-encode the flipped query and ensemble masks in
+                    # logit space.  Reduces prediction variance at the cost of one extra
+                    # backbone forward per query frame.  No decoder-state changes needed.
+                    if self.hflip_tta:
+                        flipped_img = torch.flip(samples[absolute_idx:absolute_idx + 1], dims=[-1])
+                        flipped_bb  = self._forward_backbone(flipped_img, [orig_size[absolute_idx]])
+                        flipped_out = self._compute_decoder_out_w_mem(flipped_bb, 0, idx, self.memory_bank)
+                        decoder_out.low_res_masks  = 0.5 * (decoder_out.low_res_masks  + torch.flip(flipped_out.low_res_masks,  dims=[-1]))
+                        decoder_out.high_res_masks = 0.5 * (decoder_out.high_res_masks + torch.flip(flipped_out.high_res_masks, dims=[-1]))
+                        decoder_out.masks          = decoder_out.low_res_masks
+
                     # UQ: observe-only — record confidence for quality evaluation; no decoder changes.
                     if self.uq_head is not None:
                         dec = self.sam.sam_mask_decoder
@@ -232,7 +246,7 @@ class SANSA(nn.Module):
         return BackboneOutput(orig_size, vision_feats, vision_pos, sizes)
 
 
-def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None) -> SANSA:
+def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2, 3], channel_factor: float = 0.3, device: str = 'cuda', uq_head_path: str = None, hflip_tta: bool = False) -> SANSA:
     assert sam2_version in SAM2_PATHS_CONFIG.keys(), f'wrong argument sam2_version: {sam2_version}'
     
     sam2_weights, sam2_config = SAM2_PATHS_CONFIG[sam2_version]
@@ -254,7 +268,7 @@ def build_sansa(sam2_version: str = 'large', adaptformer_stages: List[int] = [2,
 
     state_dict = torch.load(sam2_weights, map_location="cpu", weights_only=False)["model"]
     sam.load_state_dict(state_dict, strict=False)
-    model = SANSA(sam=sam, device=torch.device(device))
+    model = SANSA(sam=sam, device=torch.device(device), hflip_tta=hflip_tta)
 
     # freeze everything except adapters
     for name, p in model.named_parameters():

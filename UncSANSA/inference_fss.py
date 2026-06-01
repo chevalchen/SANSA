@@ -22,7 +22,8 @@ def main(args: argparse.Namespace) -> float:
     print(args)
 
     model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device,
-                        uq_head_path=getattr(args, 'uq_head_path', None))
+                        uq_head_path=getattr(args, 'uq_head_path', None),
+                        hflip_tta=getattr(args, 'hflip_tta', False))
     device = torch.device(args.device)
     model.to(device)
 

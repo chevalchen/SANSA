@@ -46,6 +46,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     # Inference
     parser.add_argument("--threshold", type=float, default=0.5, help="Sigmoid threshold to binarize masks at eval.")
     parser.add_argument("--visualize", action="store_true", default=False, help="Save qualitative results.")
+    parser.add_argument("--hflip_tta", action="store_true", default=False,
+                        help="Enable horizontal-flip test-time augmentation for query frames: "
+                             "re-encode the flipped image and ensemble masks in logit space. "
+                             "Adds one backbone forward per query frame. (+0.43 mIoU on PACO-Part.)")
     parser.add_argument("--uq_head_path", type=str, default=None,
                         help="Path to a trained UQ head (.pth). When provided, inference_fss.py "
                              "records per-episode confidence scores (observe-only; no decoder changes).")
