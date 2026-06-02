@@ -42,7 +42,11 @@ class DatasetPACOPart(Dataset):
         ok = False
         while not ok:
             ok = True
-            query_img, query_mask, support_imgs, support_masks, query_name, support_names, class_sample, org_qry_imsize = self.load_frame()
+            try:
+                query_img, query_mask, support_imgs, support_masks, query_name, support_names, class_sample, org_qry_imsize = self.load_frame()
+            except (ValueError, OSError):
+                ok = False
+                continue
             for smask in support_masks:
                 if 0 in smask.shape:
                     ok = False
