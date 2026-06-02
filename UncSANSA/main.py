@@ -25,8 +25,18 @@ def main(args):
     print(args)
 
     device = torch.device(args.device)
-    model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device)
+    model = build_sansa(args.sam2_version, args.adaptformer_stages, args.channel_factor, args.device,
+                        boundary_refine=getattr(args, 'boundary_refine', False))
     model.to(device)
+
+    # 2-stage training: freeze adapter params, only train BRM
+    if getattr(args, 'freeze_adapter', False):
+        frozen = sum(p.numel() for n, p in model.named_parameters()
+                     if 'adapter' in n and p.requires_grad)
+        for n, p in model.named_parameters():
+            if 'adapter' in n:
+                p.requires_grad_(False)
+        print(f"[freeze_adapter] frozen {frozen:,} adapter params; only brm params trainable")
 
     model_without_ddp = model
     if args.distributed:

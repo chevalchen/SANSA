@@ -54,6 +54,17 @@ def get_args_parser() -> argparse.ArgumentParser:
                         help="Memory closed-loop feedback: second decode using first prediction "
                              "as soft mask_inputs prompt; fuse two logits with equal weight. "
                              "No extra backbone cost (reuses memory-conditioned features).")
+    parser.add_argument("--boundary_refine", action="store_true", default=False,
+                        help="Boundary Refinement Module (BRM): lightweight residual correction "
+                             "at uncertain boundary pixels (sigmoid in (0.4,0.6)). "
+                             "Requires stage-2 training with --freeze_adapter.")
+    parser.add_argument("--freeze_adapter", action="store_true", default=False,
+                        help="Freeze adapter params during training; only BRM params are updated. "
+                             "Use with --boundary_refine for 2-stage training.")
+    parser.add_argument("--max_steps", type=int, default=None,
+                        help="Max training iterations per epoch (default: full dataset). "
+                             "Useful for fast BRM training: --max_steps 1000 gives ~1h/epoch "
+                             "with frozen backbone on SAM2-large.")
     parser.add_argument("--uq_head_path", type=str, default=None,
                         help="Path to a trained UQ head (.pth). When provided, inference_fss.py "
                              "records per-episode confidence scores (observe-only; no decoder changes).")

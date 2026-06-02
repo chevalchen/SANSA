@@ -119,10 +119,10 @@ def resume_from_checkpoint(ck_path, model, optimizer=None, lr_scheduler=None, ar
 
 
 def adapter_state_dict(model) -> dict:
-    """Return adapter and UQ-head parameters/buffers from a model.state_dict()."""
+    """Return adapter, BRM, and UQ-head parameters/buffers from a model.state_dict()."""
     sd = model.state_dict()
     adapter_sd = {k: v.cpu() for k, v in sd.items()
-                  if 'adapter' in k or 'uq_head' in k}
+                  if 'adapter' in k or 'uq_head' in k or 'brm' in k}
     if not adapter_sd:
         print("[warn] no adapter keys found when saving!")
     return adapter_sd

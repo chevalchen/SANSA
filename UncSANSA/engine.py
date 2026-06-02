@@ -44,7 +44,10 @@ def train_one_epoch(
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
-    for batch in metric_logger.log_every(data_loader, print_freq, header):
+    max_steps = getattr(args, 'max_steps', None)
+    for step, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        if max_steps is not None and step >= max_steps:
+            break
         model.train()
         # unpack
         query_img = batch['query_img']         # [B, C, H, W]
